@@ -113,6 +113,18 @@ def send_device_command(auth: UEMAuth, device_id: str, command: str) -> dict:
                  accept=ACCEPT_V1)
 
 
+def _device_install_body(auth: UEMAuth, device_id: str) -> dict:
+    """Build the device identity payload required by app install endpoints."""
+    device = get_device(auth, device_id)
+    numeric_id = device.get("Id", {}).get("Value", device_id)
+    return {
+        "DeviceId": int(numeric_id),
+        "Udid": device.get("Udid", ""),
+        "SerialNumber": device.get("SerialNumber", ""),
+        "MacAddress": device.get("MacAddress", ""),
+    }
+
+
 # ---------------------------------------------------------------------------
 # Organization Group operations
 # ---------------------------------------------------------------------------
@@ -393,6 +405,97 @@ def get_app(auth: UEMAuth, app_id: str, app_type: str = "internal") -> dict:
                 detail["ApplicationFileName"] = app.get("ApplicationFileName")
                 break
     return detail
+
+
+def search_purchased_apps(auth: UEMAuth, **kwargs) -> dict:
+    """Search purchased/VPP applications.
+
+    Supports the dedicated purchased-app search endpoint, which returns both the
+    numeric app ID and the UUID required by purchased-app install endpoints.
+    """
+    params = {k: v for k, v in kwargs.items() if v is not None}
+    return _get(auth, "/api/mam/apps/purchased/search", params=params, accept=ACCEPT_V1)
+
+
+def _resolve_purchased_app_uuid(auth: UEMAuth, app_id: Optional[str], app_uuid: Optional[str]) -> str:
+    """Resolve the purchased/VPP app UUID required for install operations."""
+    if app_uuid:
+        return app_uuid
+    if not app_id:
+        raise ValueError("Purchased app install requires app_id or app_uuid.")
+
+    page = 0
+    pagesize = 500
+    target = str(app_id)
+    while True:
+        data = search_purchased_apps(auth, page=page, pagesize=pagesize)
+        apps = data.get("Application", [])
+        for app in apps:
+            found_id = str(app.get("Id", {}).get("Value", ""))
+            found_uuid = app.get("Uuid") or app.get("uuid")
+            if found_id == target and found_uuid:
+                return found_uuid
+        total = int(data.get("Total", len(apps)))
+        if (page + 1) * pagesize >= total or not apps:
+            break
+        page += 1
+
+    raise ValueError(
+        f"Could not resolve UUID for purchased app ID {app_id}. "
+        "Pass app_uuid explicitly or verify the app exists in the current UEM environment."
+    )
+
+
+def install_app(
+    auth: UEMAuth,
+    device_id: str,
+    app_id: Optional[str] = None,
+    app_type: str = "internal",
+    app_uuid: Optional[str] = None,
+) -> dict:
+    """Trigger an application install on a specific device.
+
+    App type handling:
+      - internal: POST /api/mam/apps/internal/{app_id}/install
+      - public:   POST /api/mam/apps/public/{app_id}/install
+      - purchased: POST /api/mam/apps/purchased/{app_uuid}/install
+
+    Purchased/VPP installs require the app UUID. If only a numeric app_id is
+    provided, the UUID is resolved via the dedicated purchased-app search
+    endpoint.
+    """
+    normalized = (app_type or "internal").strip().lower()
+    if normalized not in {"internal", "public", "purchased"}:
+        raise ValueError("app_type must be one of: internal, public, purchased")
+
+    body = _device_install_body(auth, device_id)
+
+    if normalized == "purchased":
+        resolved_uuid = _resolve_purchased_app_uuid(auth, app_id, app_uuid)
+        result = _post(
+            auth,
+            f"/api/mam/apps/purchased/{resolved_uuid}/install",
+            body=body,
+            accept=ACCEPT_V2,
+        )
+        result["app_uuid"] = resolved_uuid
+        result["app_type"] = normalized
+        result["device_id"] = str(body["DeviceId"])
+        return result
+
+    if not app_id:
+        raise ValueError(f"{normalized} app install requires app_id.")
+
+    result = _post(
+        auth,
+        f"/api/mam/apps/{normalized}/{app_id}/install",
+        body=body,
+        accept=ACCEPT_V1,
+    )
+    result["app_id"] = str(app_id)
+    result["app_type"] = normalized
+    result["device_id"] = str(body["DeviceId"])
+    return result
 
 
 def upload_app_blob(auth: UEMAuth, file_path: str, og_id: int) -> dict:

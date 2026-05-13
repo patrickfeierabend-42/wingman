@@ -616,6 +616,26 @@ TOOLS = [
         },
     ),
     Tool(
+        name="uem_install_app",
+        description=(
+            "Trigger an application install on a specific device. "
+            "Supports internal, public, and purchased/VPP apps. "
+            "For internal/public apps pass app_id. "
+            "For purchased/VPP apps pass app_uuid or app_id; app_id is "
+            "resolved to the required UUID via purchased-app search."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "device_id": {"type": "string", "description": "The numeric device ID"},
+                "app_id": {"type": "string", "description": "The numeric application ID (required for internal/public, optional for purchased if app_uuid is given)"},
+                "app_type": {"type": "string", "description": "App type: internal, public, or purchased (default: internal)"},
+                "app_uuid": {"type": "string", "description": "Purchased/VPP application UUID. Optional shortcut for purchased installs."},
+            },
+            "required": ["device_id"],
+        },
+    ),
+    Tool(
         name="uem_download_app_blob",
         description=(
             "Download an application binary file from UEM to disk. "
@@ -1775,6 +1795,7 @@ def _register_api_tools():
         "uem_get_baseline_policy": (uem_api.get_baseline_policy, ["policy_uuid"]),
         "uem_search_apps": (uem_api.search_apps, None),
         "uem_get_app": (uem_api.get_app, ["app_id"]),
+        "uem_install_app": (uem_api.install_app, ["device_id"]),
         "uem_download_app_blob": (uem_api.download_app_blob, ["blob_uuid", "output_dir"]),
         "uem_create_profile": (uem_api.create_profile, ["platform", "profile_json"]),
         "uem_search_scripts": (uem_api.search_scripts, ["og_uuid"]),

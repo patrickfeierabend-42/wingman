@@ -4,7 +4,7 @@
 
 MCP server providing Omnissa product documentation search via local RAG and live API access to UEM, Horizon, App Volumes, Workspace ONE Access, Omnissa Identity Service, and Horizon Cloud Service.
 
-Exposes 82 tools over the [Model Context Protocol](https://modelcontextprotocol.io):
+Exposes 83 tools over the [Model Context Protocol](https://modelcontextprotocol.io):
 
 ### Documentation search (local RAG — no auth required)
 
@@ -78,6 +78,7 @@ Exposes 82 tools over the [Model Context Protocol](https://modelcontextprotocol.
 |------|-------------|
 | `uem_search_apps` | Search applications by name, bundle ID, platform |
 | `uem_get_app` | Get full app details by ID (includes blob GUID and original filename) |
+| `uem_install_app` | Trigger install on a device for internal, public, or purchased/VPP apps |
 | `uem_download_app_blob` | Download an application binary to disk |
 
 #### UEM — Compliance & Security Baselines
@@ -294,16 +295,20 @@ If you placed the stores in the default location (`~/.wingman-mcp/stores/`), no 
 
 ### Codex
 
+Use the full path to the `wingman-mcp` binary in Codex. MCP clients launch
+the server outside your interactive shell, so pyenv/conda/venv activation does
+not happen automatically.
+
 You can add the server to Codex with the CLI:
 
 ```bash
-codex mcp add wingman -- wingman-mcp serve
+codex mcp add wingman -- /Users/you/.venvs/wingman/bin/wingman-mcp serve
 ```
 
 If your stores are not in the default location, include the environment variable when adding it:
 
 ```bash
-codex mcp add wingman --env WINGMAN_MCP_DATA_DIR=/path/to/stores -- wingman-mcp serve
+codex mcp add wingman --env WINGMAN_MCP_DATA_DIR=/path/to/stores -- /Users/you/.venvs/wingman/bin/wingman-mcp serve
 ```
 
 Verify the server is configured:
@@ -316,7 +321,7 @@ You can also add it directly to `~/.codex/config.toml`:
 
 ```toml
 [mcp_servers.wingman]
-command = "wingman-mcp"
+command = "/Users/you/.venvs/wingman/bin/wingman-mcp"
 args = ["serve"]
 
 [mcp_servers.wingman.env]
@@ -324,6 +329,68 @@ WINGMAN_MCP_DATA_DIR = "/path/to/stores"
 ```
 
 If you are using the default store location (`~/.wingman-mcp/stores/`), you can omit the `[mcp_servers.wingman.env]` block.
+
+After changing the config, restart Codex so it reloads the MCP server list.
+
+Configure UEM credentials before calling live UEM tools:
+
+```bash
+/Users/you/.venvs/wingman/bin/wingman-mcp auth set --product uem
+/Users/you/.venvs/wingman/bin/wingman-mcp auth test --product uem
+```
+
+Common Codex flow:
+
+1. Install the package and stores.
+2. Add the server to Codex using the full binary path.
+3. Restart Codex.
+4. Run `wingman-mcp auth set --product uem`.
+5. Use the UEM tools from Codex, including `uem_install_app`.
+
+#### `uem_install_app` examples
+
+Internal app install:
+
+```json
+{
+  "device_id": "12345",
+  "app_type": "internal",
+  "app_id": "67890"
+}
+```
+
+Public app install:
+
+```json
+{
+  "device_id": "12345",
+  "app_type": "public",
+  "app_id": "67891"
+}
+```
+
+Purchased / VPP app install with explicit UUID:
+
+```json
+{
+  "device_id": "12345",
+  "app_type": "purchased",
+  "app_uuid": "11111111-2222-3333-4444-555555555555"
+}
+```
+
+Purchased / VPP app install with numeric app ID only:
+
+```json
+{
+  "device_id": "12345",
+  "app_type": "purchased",
+  "app_id": "67892"
+}
+```
+
+For purchased / VPP apps, the tool resolves the required app UUID from the
+numeric app ID if you do not pass `app_uuid` explicitly.
 
 ### Claude Desktop
 
