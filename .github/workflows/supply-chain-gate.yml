@@ -123,7 +123,9 @@ jobs:
         shell: bash
         run: |
           set -uo pipefail
-          if ! git ls-files | grep -qE '(^|/)(Dockerfile[^/]*|[^/]+\.dockerfile)$'; then
+          # Erst in eine Datei schreiben: grep -q mit pipefail wuerde git per SIGPIPE scheitern lassen.
+          git ls-files > "$RUNNER_TEMP/sc/files.txt"
+          if ! grep -qE '(^|/)(Dockerfile[^/]*|[^/]+\.dockerfile)$' "$RUNNER_TEMP/sc/files.txt"; then
             echo "Keine Dockerfiles - Trivy config entfaellt."
             exit 0
           fi
@@ -133,7 +135,7 @@ jobs:
           docker run --rm --user "$(id -u):$(id -g)" --read-only --tmpfs /tmp:size=1g \
             --cap-drop ALL --security-opt no-new-privileges -e HOME=/tmp -e TRIVY_CACHE_DIR=/tmp/trivy \
             -e TRIVY_NO_PROGRESS=true -v "$GITHUB_WORKSPACE:/src:ro" -w /src "$TRIVY_IMAGE" \
-            config --severity HIGH,CRITICAL --exit-code 3 "${ignore[@]}" --skip-dirs node_modules /src || rc=$?
+            config --skip-version-check --severity HIGH,CRITICAL --exit-code 3 "${ignore[@]}" --skip-dirs node_modules /src || rc=$?
           if [ "$rc" -eq 3 ]; then
             if [ "$SUPPLY_CHAIN_BLOCK_VULNS" = "true" ]; then
               echo "::error::trivy config: HIGH/CRITICAL-Fehlkonfiguration. Beheben oder begruendet und befristet in .trivyignore.yaml ausnehmen."
