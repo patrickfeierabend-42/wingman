@@ -1,0 +1,149 @@
+# Lieferketten-Gate (Vorlage der Betriebszentrale FeierabendSysAdnNetAdmin,
+# Schwachstellen-Patrouille §7; abgeleitet vom Gate in afhOS, ADR-0090).
+#
+# Prueft jeden Pull Request und jeden Push auf main:
+#   * OSV-Scanner: bekannte Schwachstellen und gemeldete Schadpakete (OpenSSF, IDs MAL-*)
+#     in allen Lockfiles des Repos.
+#   * GuardDog: nur neue oder geaenderte Abhaengigkeiten gegenueber dem Basis-Stand
+#     (npm, PyPI; Packagist kennt GuardDog nicht, dort nur OSV).
+#   * gitleaks: Secrets in allen Commits seit dem Basis-Stand.
+#   * Trivy config: Fehlkonfiguration in Dockerfiles (nur wenn es welche gibt).
+#
+# Sofort blockierend: Schadpakete, GuardDog-Risiko >= 5, Secrets, Werkzeugfehler.
+# Nur Bericht (Job bleibt gruen, Befunde in der Zusammenfassung des Laufs), bis die
+# Repo-Variable SUPPLY_CHAIN_BLOCK_VULNS auf "true" steht: bekannte Schwachstellen mit Fix
+# (HIGH/CRITICAL) und Trivy-Fehlkonfigurationen. Umschalten, sobald das Repo sauber ist:
+#   gh variable set SUPPLY_CHAIN_BLOCK_VULNS --body true --repo <owner>/<repo>
+#
+# Ausnahmen nur begruendet und befristet: .github/supply-chain/osv-scanner.toml (IgnoredVulns),
+# .github/supply-chain/guarddog-allowlist.txt, .gitleaksignore (Fingerprint), .trivyignore.yaml.
+#
+# Lieferkette des Gates selbst: Actions per Commit-SHA, Werkzeuge per Image-Digest (gleiche
+# Staende wie afhOS, alle aelter als 7 Tage). Updates nur mit 7 Tagen Abhaengzeit.
+name: Lieferketten-Gate
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: supply-chain-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  OSV_IMAGE: ghcr.io/google/osv-scanner:v2.6.0@sha256:afd838850ac1a0fcc15ff4a041dc9ba11123c3f0d2666217a5f0fcf9222b55fa
+  GUARDDOG_IMAGE: ghcr.io/datadog/guarddog:v3.2.0@sha256:5b0804d480e83405120fc90c62b60ad844310418c836e567055b1ba8843e033d
+  GITLEAKS_IMAGE: ghcr.io/gitleaks/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f
+  TRIVY_IMAGE: ghcr.io/aquasecurity/trivy:0.74.0@sha256:62b1e65e8869bc4b4c6aa4fa2b21595256c7c2f6018a9d9ad61caf87187c1969
+  SUPPLY_CHAIN_BLOCK_VULNS: ${{ vars.SUPPLY_CHAIN_BLOCK_VULNS || 'false' }}
+
+jobs:
+  gate:
+    name: Lieferketten-Gate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Basis-Stand bestimmen
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          case "$EVENT_NAME" in
+            pull_request) base="$PR_BASE" ;;
+            push) base="$PUSH_BEFORE" ;;
+            *) base="" ;;
+          esac
+          if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ] \
+             || ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
+            base="$(git rev-parse --verify --quiet HEAD^ || true)"
+          fi
+          echo "SUPPLY_CHAIN_BASE=$base" >> "$GITHUB_ENV"
+          mkdir -p "$RUNNER_TEMP/sc"
+          echo "Basis-Stand: ${base:-(keiner, erster Commit)}"
+
+      - name: OSV-Scanner (Schwachstellen und Schadpakete)
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          set -uo pipefail
+          # GitHub startet bash mit -e; der Scanner meldet Befunde mit exit 1, deshalb rc selbst auswerten.
+          rc=0
+          # --no-resolve: nur was im Lockfile steht, keine selbst aufgeloesten Phantom-Versionen.
+          docker run --rm --user "$(id -u):$(id -g)" --read-only --tmpfs /tmp:size=1g \
+            --cap-drop ALL --security-opt no-new-privileges -e HOME=/tmp \
+            -v "$GITHUB_WORKSPACE:/src:ro" -v "$RUNNER_TEMP/sc:/out" -w /src "$OSV_IMAGE" \
+            scan source -r --no-resolve --allow-no-lockfiles \
+            --config .github/supply-chain/osv-scanner.toml \
+            --format json --output-file /out/osv.json /src || rc=$?
+          # 0 = keine Befunde, 1 = Befunde (bewertet gate.py), sonst Werkzeugfehler.
+          if [ "$rc" -gt 1 ]; then
+            echo "::error::OSV-Scanner fehlgeschlagen (exit $rc) - Gate blockiert (fail-closed)."
+            exit 1
+          fi
+          python3 -I .github/supply-chain/gate.py osv "$RUNNER_TEMP/sc/osv.json"
+
+      - name: GuardDog (nur neue oder geaenderte Abhaengigkeiten)
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: python3 -I .github/supply-chain/gate.py guarddog --base "$SUPPLY_CHAIN_BASE"
+
+      - name: gitleaks (Secrets in den Commits seit dem Basis-Stand)
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          range="HEAD"
+          [ -n "$SUPPLY_CHAIN_BASE" ] && range="${SUPPLY_CHAIN_BASE}..HEAD"
+          echo "gitleaks: pruefe $(git rev-list --count --no-merges "$range") Commit(s) ($range)"
+          # Jeder Commit einzeln: ein spaeter wieder entferntes Secret bleibt in der Historie.
+          if ! git log -p --no-merges --no-color "$range" \
+            | docker run --rm -i --user "$(id -u):$(id -g)" --read-only --cap-drop ALL \
+                --security-opt no-new-privileges --network none -v "$GITHUB_WORKSPACE:/src:ro" -w /src \
+                "$GITLEAKS_IMAGE" stdin --redact --no-banner --verbose; then
+            echo "::error::gitleaks: moegliches Secret. Secret SOFORT rotieren (es liegt in der Git-Historie), dann bereinigen. Falschpositive nur begruendet per .gitleaksignore (Fingerprint)."
+            exit 1
+          fi
+
+      - name: Trivy config (Dockerfiles)
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          set -uo pipefail
+          # Erst in eine Datei schreiben: grep -q mit pipefail wuerde git per SIGPIPE scheitern lassen.
+          git ls-files > "$RUNNER_TEMP/sc/files.txt"
+          if ! grep -qE '(^|/)(Dockerfile[^/]*|[^/]+\.dockerfile)$' "$RUNNER_TEMP/sc/files.txt"; then
+            echo "Keine Dockerfiles - Trivy config entfaellt."
+            exit 0
+          fi
+          rc=0
+          ignore=()
+          [ -f .trivyignore.yaml ] && ignore=(--ignorefile .trivyignore.yaml)
+          docker run --rm --user "$(id -u):$(id -g)" --read-only --tmpfs /tmp:size=1g \
+            --cap-drop ALL --security-opt no-new-privileges -e HOME=/tmp -e TRIVY_CACHE_DIR=/tmp/trivy \
+            -e TRIVY_NO_PROGRESS=true -v "$GITHUB_WORKSPACE:/src:ro" -w /src "$TRIVY_IMAGE" \
+            config --skip-version-check --severity HIGH,CRITICAL --exit-code 3 "${ignore[@]}" --skip-dirs node_modules /src || rc=$?
+          if [ "$rc" -eq 3 ]; then
+            if [ "$SUPPLY_CHAIN_BLOCK_VULNS" = "true" ]; then
+              echo "::error::trivy config: HIGH/CRITICAL-Fehlkonfiguration. Beheben oder begruendet und befristet in .trivyignore.yaml ausnehmen."
+              exit 1
+            fi
+            echo "::warning::trivy config: HIGH/CRITICAL-Fehlkonfiguration (Bericht, noch nicht blockierend)."
+            echo "### Trivy config: Fehlkonfigurationen gefunden (siehe Log, Modus nur Bericht)" >> "$GITHUB_STEP_SUMMARY"
+          elif [ "$rc" -ne 0 ]; then
+            echo "::error::Trivy fehlgeschlagen (exit $rc) - Gate blockiert (fail-closed)."
+            exit 1
+          fi
