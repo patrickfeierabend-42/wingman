@@ -80,14 +80,15 @@ jobs:
         shell: bash
         run: |
           set -uo pipefail
+          # GitHub startet bash mit -e; der Scanner meldet Befunde mit exit 1, deshalb rc selbst auswerten.
+          rc=0
           # --no-resolve: nur was im Lockfile steht, keine selbst aufgeloesten Phantom-Versionen.
           docker run --rm --user "$(id -u):$(id -g)" --read-only --tmpfs /tmp:size=1g \
             --cap-drop ALL --security-opt no-new-privileges -e HOME=/tmp \
             -v "$GITHUB_WORKSPACE:/src:ro" -v "$RUNNER_TEMP/sc:/out" -w /src "$OSV_IMAGE" \
             scan source -r --no-resolve --allow-no-lockfiles \
             --config .github/supply-chain/osv-scanner.toml \
-            --format json --output-file /out/osv.json /src
-          rc=$?
+            --format json --output-file /out/osv.json /src || rc=$?
           # 0 = keine Befunde, 1 = Befunde (bewertet gate.py), sonst Werkzeugfehler.
           if [ "$rc" -gt 1 ]; then
             echo "::error::OSV-Scanner fehlgeschlagen (exit $rc) - Gate blockiert (fail-closed)."
@@ -126,13 +127,13 @@ jobs:
             echo "Keine Dockerfiles - Trivy config entfaellt."
             exit 0
           fi
+          rc=0
           ignore=()
           [ -f .trivyignore.yaml ] && ignore=(--ignorefile .trivyignore.yaml)
           docker run --rm --user "$(id -u):$(id -g)" --read-only --tmpfs /tmp:size=1g \
             --cap-drop ALL --security-opt no-new-privileges -e HOME=/tmp -e TRIVY_CACHE_DIR=/tmp/trivy \
             -e TRIVY_NO_PROGRESS=true -v "$GITHUB_WORKSPACE:/src:ro" -w /src "$TRIVY_IMAGE" \
-            config --severity HIGH,CRITICAL --exit-code 3 "${ignore[@]}" --skip-dirs node_modules /src
-          rc=$?
+            config --severity HIGH,CRITICAL --exit-code 3 "${ignore[@]}" --skip-dirs node_modules /src || rc=$?
           if [ "$rc" -eq 3 ]; then
             if [ "$SUPPLY_CHAIN_BLOCK_VULNS" = "true" ]; then
               echo "::error::trivy config: HIGH/CRITICAL-Fehlkonfiguration. Beheben oder begruendet und befristet in .trivyignore.yaml ausnehmen."
