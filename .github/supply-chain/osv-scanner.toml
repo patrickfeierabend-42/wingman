@@ -1,0 +1,10 @@
+# OSV-Scanner-Ausnahmen fuer das Lieferketten-Gate (.github/workflows/supply-chain-gate.yml).
+#
+# Nur fuer nachweislich nicht zutreffende oder bewusst akzeptierte Befunde, immer mit
+# Begruendung und Ablaufdatum. Nach Ablauf meldet das Gate den Befund wieder.
+# Schadpakete (IDs MAL-*) werden NIE ausgenommen, sondern sofort entfernt.
+#
+# [[IgnoredVulns]]
+# id = "GHSA-xxxx-xxxx-xxxx"
+# ignoreUntil = 2027-01-31T00:00:00Z
+# reason = "Begruendung"

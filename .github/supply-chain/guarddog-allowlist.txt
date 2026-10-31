@@ -1,0 +1,6 @@
+# GuardDog-Ausnahmen fuer das Lieferketten-Gate.
+#
+# Nur nach MANUELLER Pruefung des Befunds (Quellcode/Diff des Pakets ansehen) und immer fuer
+# genau eine Version, mit Ablaufdatum und Begruendung. Abgelaufene Eintraege gelten nicht mehr.
+#
+# Format: <npm|pypi> <name> <version> <gueltig-bis JJJJ-MM-TT> <Begruendung>
