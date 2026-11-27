@@ -9,7 +9,7 @@ abgeleitet vom Gate in afhOS (ADR-0090). Aufruf nur aus
   gate.py guarddog --base REF  scannt nur neue oder geaenderte Abhaengigkeiten
 
 Blockiert immer: Schadpakete (OSV-ID/Alias MAL-*), GuardDog-Risiko >= 5 ohne Ausnahme,
-Pakete ausserhalb der Standard-Registry ohne Ausnahme, Werkzeugfehler (fail-closed).
+Pakete ausserhalb der Standard-Registry ohne Ausnahme, Werkzeugfehler (fail-closed; ein exakter Allowlist-Eintrag nimmt auch einen Werkzeugfehler aus, F-491).
 Blockiert erst mit Repo-Variable SUPPLY_CHAIN_BLOCK_VULNS=true: bekannte Schwachstellen
 mit verfuegbarem Fix und Schwere HIGH/CRITICAL (bzw. CVSS >= 7). Vorher nur Bericht.
 """
@@ -280,11 +280,14 @@ def cmd_guarddog(base: str, workers: int) -> int:
         with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
             results = list(pool.map(lambda d: (d, *scan(d, image)), todo))
         for d, report, err in results:
-            if err or report is None:
-                rows.append((d.key, "fehler", "-", err or "kein Ergebnis"))
-                continue
-            if report.get("errors"):
-                rows.append((d.key, "fehler", "-", "; ".join(f"{k}: {v}" for k, v in report["errors"].items())[:300]))
+            if err or report is None or report.get("errors"):
+                why = err or "; ".join(f"{k}: {v}" for k, v in (report or {}).get("errors", {}).items()) or "kein Ergebnis"
+                if d.key in allow:
+                    # F-491: exakter Allowlist-Eintrag (Version, Ablauf, Begruendung) nimmt auch einen
+                    # Werkzeugfehler aus; ohne Eintrag bleibt es fail-closed.
+                    rows.append((d.key, "ausgenommen", "-", f"{allow[d.key]} (Werkzeugfehler: {why[:150]})"))
+                else:
+                    rows.append((d.key, "fehler", "-", why[:300]))
                 continue
             risk = report.get("risk_score") or {}
             score = float(risk.get("score") or 0.0)
