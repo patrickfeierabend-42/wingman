@@ -63,7 +63,14 @@ jobs:
         run: |
           set -euo pipefail
           case "$EVENT_NAME" in
-            pull_request) base="$PR_BASE" ;;
+            # Merge-Ref (refs/pull/N/merge): HEAD^1 ist der aktuelle Stand des Ziel-Branches. base.sha
+            # bleibt bei PR-Updates ohne Rebase alt, dann pruefte gitleaks schon gemergte Commits (F-489).
+            pull_request)
+              if git rev-parse --verify --quiet 'HEAD^2' >/dev/null; then
+                base="$(git rev-parse HEAD^1)"
+              else
+                base="$PR_BASE"
+              fi ;;
             push) base="$PUSH_BEFORE" ;;
             *) base="" ;;
           esac
